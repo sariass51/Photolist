@@ -2,13 +2,57 @@ import streamlit as st
 import pandas as pd
 import re
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Font
+
 
 def limpiar_colores(texto):
-    colores = re.findall(r'\d{3} [A-ZÁÉÍÓÚÑ ]+', str(texto))
-    # Eliminar espacios extra al final de cada color
-    colores = [c.strip() for c in colores]
-    return ' - '.join(colores)
+    """
+    Cuando NO hay 'Detalle paquete':
+    - Divide por guiones "-"
+    - Se queda con lo que está antes de ":" (ignora tallas)
+    - Une los colores con " - "
+    """
+    partes = str(texto).split("-")
+    colores = []
+    for parte in partes:
+        parte = parte.strip()
+        if not parte:
+            continue
+        if ":" in parte:
+            colores.append(parte.split(":")[0].strip())  # lo que está antes de ":"
+        else:
+            colores.append(parte)
+    return " - ".join(colores)
+
+
+def construir_color(row):
+    lista_detalle = str(row["Lista de detalle color y talla"])
+    detalle_paquete = str(row.get("Detalle paquete", "")).strip()
+
+    # Si no hay detalle_paquete -> usamos limpiar_colores
+    if not detalle_paquete or detalle_paquete.lower() == "nan":
+        valor = limpiar_colores(lista_detalle)
+        return "" if valor.lower() == "nan" else valor
+
+    # Capturar códigos: Sxx o números de 3 dígitos
+    codigos = re.findall(r'(S\d+|[A-Z]\d{2,3}|\d{3})', lista_detalle, flags=re.IGNORECASE)
+
+    # Caso: SOLO UN código → se pega todo el detalle completo
+    if len(codigos) == 1:
+        return f"{codigos[0]} {detalle_paquete}"
+
+    # Caso: Varios códigos → separar detalle SOLO por "-"
+    colores_paquete = [c.strip() for c in detalle_paquete.split("-") if c.strip()]
+
+    # Emparejar códigos con descripciones del paquete
+    resultado = []
+    for i, codigo in enumerate(codigos):
+        if i < len(colores_paquete):
+            resultado.append(f"{codigo} {colores_paquete[i]}")
+        else:
+            resultado.append(codigo)  # Si faltan colores, dejamos solo el código
+
+    return " - ".join(resultado)
 
 
 def actualizar_photolist(archivo_origen, archivo_destino, archivo_paginas, nombre_disenador):
@@ -17,7 +61,11 @@ def actualizar_photolist(archivo_origen, archivo_destino, archivo_paginas, nombr
     if 'Lista de detalle color y talla' not in df_origen.columns:
         raise ValueError("La columna 'Lista de detalle color y talla' no está en el archivo.")
 
-    df_origen['Color y talla'] = df_origen['Lista de detalle color y talla'].apply(limpiar_colores)
+    if 'ClaseVenta' not in df_origen.columns:
+        raise ValueError("La columna 'ClaseVenta' no está en el archivo.")
+
+    # Construcción de colores (usa Detalle paquete si existe)
+    df_origen['Color y talla'] = df_origen.apply(construir_color, axis=1)
 
     paginas_validas_df = pd.read_excel(archivo_paginas)
     if 'Paginas' not in paginas_validas_df.columns or 'Vehículo' not in paginas_validas_df.columns:
@@ -35,15 +83,13 @@ def actualizar_photolist(archivo_origen, archivo_destino, archivo_paginas, nombr
     columnas_finales = ['Pais', 'DISEÑADOR', 'Página', 'Referencia', 'Color y talla']
     filas_expand = []
     filas_por_grupo = []
-    filas_separadoras = []  # 🔥 Guardaremos las filas vacías para colorearlas
+    filas_separadoras = []  # Guardaremos las filas vacías para colorearlas
 
     # Limpiar espacios extra y guiones al final
     df_origen['Color y talla'] = df_origen['Color y talla'].str.strip()
 
     def join_colores_sin_guion_final(colores):
-        # Eliminar espacios en cada color
         colores = [c.strip() for c in colores if c.strip()]
-        # Unir con ' - ' solo si hay colores
         return ' - '.join(colores)
 
     # Agrupar y unir colores sin generar guion final innecesario
@@ -97,7 +143,7 @@ def actualizar_photolist(archivo_origen, archivo_destino, archivo_paginas, nombr
         })
         filas_separadoras.append(len(filas_expand))  # Guardamos índice para pintar
 
-    # Crear DataFrame
+    # Crear DataFrame final
     df_final = pd.DataFrame(filas_expand)
     df_final = df_final[columnas_finales]
     df_final.to_excel(archivo_destino, index=False)
@@ -105,7 +151,7 @@ def actualizar_photolist(archivo_origen, archivo_destino, archivo_paginas, nombr
     wb = load_workbook(archivo_destino)
     ws = wb.active
 
-    # 🔥 Pintar filas separadoras de gris oscuro
+    # Pintar filas separadoras de gris oscuro
     gray_fill = PatternFill(start_color="BCBCBC", end_color="BCBCBC", fill_type="solid")
     for row_idx in filas_separadoras:
         for col in range(1, 6):  # Columnas A-E
@@ -118,9 +164,9 @@ def actualizar_photolist(archivo_origen, archivo_destino, archivo_paginas, nombr
             if start < end:
                 ws.merge_cells(f"{col}{start}:{col}{end}")
 
+
     wb.save(archivo_destino)
     return df_final
-
 
 
 # -------------------- Streamlit UI --------------------
@@ -151,4 +197,3 @@ if archivo_origen and archivo_paginas and nombre_disenador and st.button("Proces
         st.error(f"Hubo un error: {e}")
 elif not nombre_disenador:
     st.warning("⚠️ Por favor, ingresa tu nombre antes de procesar.")
-
